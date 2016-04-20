@@ -1,0 +1,246 @@
+Prerequisite: Kafka running locally, clean data (remove Zookeeper data and Kafka logs)
+
+A. Spring Cloud Stream 
+
+1. Create first application, the greeter
+
+a) From start.spring.io create a new application with “Stream Kafka” as a dependency (choice of group, artifact, main class, package etc.)
+
+b) Change main class as follows (explain each step):
+
+@SpringBootApplication
+@EnableBinding(Source.class) 
+public class Greeter {
+	
+	public static final void main(String args[]) {
+         …
+	}	
+
+	@InboundChannelAdapter(Source.OUTPUT)
+	public String sayHello() {
+		return “hello” + System.getCurrentTimeMillis();
+	}
+}
+
+c) Edit application.properties (if using STS show completion)
+
+spring.cloud.stream.bindings.output.destination=messages
+server.port=0 
+
+d) Start application
+
+e) Show the newly created topic in the Kafka log
+
+f) Optional: start ./kafka-console-consumer.sh —zookeeper localhost:2181 —topic messages
+
+2. Create second application the logging receiver
+
+a) From start.spring.io create a new application with “Stream Kafka” as a dependency (choice of group, artifact, main class, package etc.)
+
+b) Change main class as follows:
+
+@SpringBootApplication
+@EnableBinding(Sink.class)
+public class LoggingReceiver {
+
+  public static final void main(String args[]) {
+    …
+  }
+
+  @ServiceActivator(inputChannel=Sink.INPUT)
+  public void logMessage(String message) {
+    System.out.println(message);
+  }
+}
+
+c) Edit application.properties (if using STS show completion), explain how the two applications get connected via sharing a common destination
+
+spring.cloud.stream.bindings.input.destination=messages
+server.port=0 
+
+d) Start application
+
+e) Show messages flowing
+
+3. Data conversion on output - back to the Greeter application
+
+a) In Greeter, create Greeting Pojo with greeting field and timestamp (similar results can be done with sensors, etc)
+
+public class Greeting {
+
+	private String greeting;
+
+	private long timestamp;
+
+
+	public Greeting() {
+	}
+
+	public Greeting(String greeting, long timestamp) {
+		super();
+		this.greeting = greeting;
+		this.timestamp = timestamp;
+	}
+
+	public String getGreeting() {
+		return greeting;
+	}
+
+	public void setGreeting(String greeting) {
+		this.greeting = greeting;
+	}
+
+	public long getTimestamp() {
+		return timestamp;
+	}
+
+	public void setTimestamp(long timestamp) {
+		this.timestamp = timestamp;
+	}
+
+b) Change source to:
+
+@SpringBootApplication
+@EnableBinding(Source.class) 
+public class Greeter {
+	
+	public static final void main(String args[]) {
+         …
+	}	
+
+	@InboundChannelAdapter(Source.OUTPUT)
+	public Greeting sayHello() {
+		return new Greeting(“hello”, System.getCurrentTimeMillis());
+	}
+}
+
+c) Go to application.properties
+
+spring.cloud.stream.bindings.output.content-type=application-json
+
+d) Restart application
+
+e) Show how log-receiver is now receiving JSON data (marshalled Greetings)
+
+4. Show data coercion on input:
+
+a) Create GreetingProcessor via starter.spring.io 
+
+b) Create class ReceivedGreeting (explain that we do not share code with the other project)
+
+public class ReceivedGreeting {
+
+	private String greeting;
+
+	private long timestamp;
+
+	public String getGreeting() {
+		return greeting;
+	}
+
+	public void setGreeting(String greeting) {
+		this.greeting = greeting;
+	}
+
+	public long getTimestamp() {
+		return timestamp;
+	}
+
+	public void setTimestamp(long timestamp) {
+		this.timestamp = timestamp;
+	}
+
+}
+
+c) Change Main method of GreetingProcessor
+
+@SpringBootApplication
+@EnableBinding(Processor.class)
+public class LoggingReceiver {
+
+  public static final void main(String args[]) {
+    …
+  }
+
+ @StreamListener(Processor.INPUT) @SendTo(Processor.OUTPUT)
+ public String transformGreeting(ReceivedGreeting greeting) {
+   return greeting.getGreeting().toUpperCase() + “-:-” + greeting.getTimestamp();
+ }
+}
+
+(Explain that @StreamListener does the coercion)
+
+d) change application.properties for GreetingProcessor
+
+spring.cloud.stream.bindings.input.destination=messages
+spring.cloud.stream.bindings.output.destination=transformed
+server.port=0
+
+e) change application.properties for LogReceiver
+
+spring.cloud.stream.bindings.input.destination=transformed
+
+f) Restart LogReceiver and GreetingProcessor
+
+Now the messages logged are transformed. Explain again what the entire pipeline consists of.
+
+Stop LoggingReceiver and now point it to the transformed list
+
+B. Moving to dataflow
+
+1. Start local admin server
+
+java -jar spring-cloud-dataflow-server-local/target/spring-cloud-dataflow-server-local-1.0.0.BUILD-SNAPSHOT.jar
+
+2. Start shell
+java -jar spring-cloud-dataflow-shell/target/spring-cloud-dataflow-shell-1.0.0.BUILD-SNAPSHOT.jar
+
+
+3. Create demo stream with out of the box modules
+
+stream create demo --definition "http --server.port=9000 | file --directory=/tmp/demo"
+
+stream list
+
+stream deploy demo
+
+4. Create a tap
+
+stream create tap --definition ":demo.http > field-value-counter --name=http-data --field-name=name --store=redis"
+stream deploy tap
+
+5. Post data
+http post --target http://localhost:9000 --data "{'name':'SCStream'}"
+
+Show data logged in the file and in the field value counter (admin server) 
+
+6. Create custom module
+
+a. Create new project - with Redis binder (should be Kafka or Rabbit after 1.0.0.M3)
+
+b. Create UpperCase transformer
+
+@SpringBootApplication
+@EnableBinding(Processor.class)
+public class LoggingReceiver {
+
+  public static final void main(String args[]) {
+    …
+  }
+
+  @StreamListener(Processor.INPUT) @SendTo(Processor.OUTPUT)
+  public String toUpper(String payload) {
+   return payload.toUpperCase();
+  }
+}
+
+7. Register module
+module register --uri maven://tjug:transformer:0.0.1-SNAPSHOT --name uppercase --type processor --force
+
+8. Register new stream 
+stream create demo --definition "http --server.port=9000 | uppercase | file --directory=/tmp/demo"
+
+9. Post data 
+
+http post --target http://localhost:9000 --data “hello” - show the value converted uppercase
+
